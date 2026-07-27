@@ -16,6 +16,7 @@ import { toast } from "react-hot-toast";
 import Variants from "../variants/Variants";
 import UpdateImageUpload, { UpdateImagePreview } from "../UpdateImageUpload";
 import AgentActivity from "../agent/AgentActivity";
+import { formatCompletedGenerationDuration } from "../agent/generation-time";
 import WorkingPulse from "../core/WorkingPulse";
 import ImageLightbox from "../ImageLightbox";
 import { Commit } from "../commits/types";
@@ -71,10 +72,11 @@ function getSelectedElementTag(commit: Commit | null): string | null {
   return extractTagName(html);
 }
 
-function isSlowGeminiModel(model?: string): boolean {
+function isSlowModel(model?: string): boolean {
   return (
     model === CodeGenerationModel.GEMINI_3_1_PRO_PREVIEW_HIGH ||
-    model === CodeGenerationModel.GEMINI_3_1_PRO_PREVIEW_MEDIUM
+    model === CodeGenerationModel.GEMINI_3_1_PRO_PREVIEW_MEDIUM ||
+    model === CodeGenerationModel.GPT_5_6_SOL_MAX
   );
 }
 
@@ -188,6 +190,11 @@ function Sidebar({
   const elapsedSeconds = requestStartMs
     ? Math.max(1, Math.round((nowMs - requestStartMs) / 1000))
     : undefined;
+  const totalGenerationTime = formatCompletedGenerationDuration(
+    selectedVariant?.status,
+    requestStartMs,
+    selectedVariant?.completedAt
+  );
 
   const isAiCommit =
     currentCommit?.type === "ai_create" || currentCommit?.type === "ai_edit";
@@ -421,7 +428,7 @@ function Sidebar({
           head === latestCommitHash &&
           !isSelectedVariantComplete &&
           !isSelectedVariantError &&
-          isSlowGeminiModel(selectedVariant?.model) && (
+          isSlowModel(selectedVariant?.model) && (
           <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
             Slow, high quality model. May take 5-10 mins on some images/videos.
           </div>
@@ -437,6 +444,14 @@ function Sidebar({
             (head === latestCommitHash &&
               (isSelectedVariantComplete || isSelectedVariantError))) && (
             <div className="mb-3 flex items-center justify-end gap-2">
+              {totalGenerationTime && (
+                <span
+                  className="text-[11px] font-medium tabular-nums text-gray-400 dark:text-gray-500"
+                  data-testid="total-generation-time"
+                >
+                  {totalGenerationTime}
+                </span>
+              )}
               {head === latestCommitHash && !isSelectedVariantError && (
                 <GenerationFeedbackButtons
                   selectedValue={selectedFeedbackValue}

@@ -1,9 +1,10 @@
 # pyright: reportUnknownVariableType=false
+import base64
 import copy
 import json
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 
 from anthropic import AsyncAnthropic
 from openai.types.chat import ChatCompletionMessageParam
@@ -15,15 +16,26 @@ from agent.providers.base import (
     ProviderTurn,
     StreamEvent,
 )
-from agent.providers.anthropic.image import process_image, process_image_bytes
-from agent.providers.pricing import MODEL_PRICING
-from agent.providers.token_usage import TokenUsage
+from agent.providers.anthropic.image import (
+    CLAUDE_MANY_IMAGE_MAX_DIMENSION,
+    CLAUDE_MANY_IMAGE_THRESHOLD,
+    process_image,
+    process_image_bytes,
+)
+from costs.pricing import MODEL_PRICING
+from costs.token_usage import TokenUsage
 from agent.tools import CanonicalToolDefinition, ToolCall, parse_json_arguments
+from fs_logging.agent_runs import AgentRunRecorder
 from fs_logging.prompt_reports import PromptReportLogger
 from llm import Llm
 
 THINKING_MODELS: set[str] = set()
 ADAPTIVE_THINKING_MODELS = {
+    Llm.CLAUDE_OPUS_5_LOW.value,
+    Llm.CLAUDE_OPUS_5_MEDIUM.value,
+    Llm.CLAUDE_OPUS_5_HIGH.value,
+    Llm.CLAUDE_OPUS_5_XHIGH.value,
+    Llm.CLAUDE_OPUS_5_MAX.value,
     Llm.CLAUDE_OPUS_4_8_LOW.value,
     Llm.CLAUDE_OPUS_4_8_MEDIUM.value,
     Llm.CLAUDE_OPUS_4_8_HIGH.value,
@@ -38,6 +50,11 @@ ADAPTIVE_THINKING_MODELS = {
 }
 
 ANTHROPIC_MODEL_CONFIG: dict[Llm, dict[str, str]] = {
+    Llm.CLAUDE_OPUS_5_LOW: {"api_name": "claude-opus-5", "effort": "low"},
+    Llm.CLAUDE_OPUS_5_MEDIUM: {"api_name": "claude-opus-5", "effort": "medium"},
+    Llm.CLAUDE_OPUS_5_HIGH: {"api_name": "claude-opus-5", "effort": "high"},
+    Llm.CLAUDE_OPUS_5_XHIGH: {"api_name": "claude-opus-5", "effort": "xhigh"},
+    Llm.CLAUDE_OPUS_5_MAX: {"api_name": "claude-opus-5", "effort": "max"},
     Llm.CLAUDE_OPUS_4_8_LOW: {"api_name": "claude-opus-4-8", "effort": "low"},
     Llm.CLAUDE_OPUS_4_8_MEDIUM: {"api_name": "claude-opus-4-8", "effort": "medium"},
     Llm.CLAUDE_OPUS_4_8_HIGH: {"api_name": "claude-opus-4-8", "effort": "high"},
@@ -64,6 +81,63 @@ def _get_anthropic_effort(model: Llm) -> str:
     return "max"
 
 
+def _anthropic_image_blocks(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return direct and tool-result image blocks from Anthropic messages."""
+    image_blocks: List[Dict[str, Any]] = []
+
+    def collect(content: Any) -> None:
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "image":
+                image_blocks.append(block)
+            elif block.get("type") == "tool_result":
+                collect(block.get("content"))
+
+    for message in messages:
+        collect(message.get("content"))
+
+    return image_blocks
+
+
+def _enforce_many_image_dimension_limit(
+    messages: List[Dict[str, Any]],
+) -> bool:
+    """Resize base64 images when a request crosses Anthropic's 20-image limit.
+
+    Returns whether the request is subject to the many-image limit. URL-backed
+    images count toward the threshold, even though only local base64 sources can
+    be resized here.
+    """
+    image_blocks = _anthropic_image_blocks(messages)
+    if len(image_blocks) <= CLAUDE_MANY_IMAGE_THRESHOLD:
+        return False
+
+    for block in image_blocks:
+        source = block.get("source")
+        if not isinstance(source, dict) or source.get("type") != "base64":
+            continue
+
+        media_type = source.get("media_type")
+        encoded_data = source.get("data")
+        if not isinstance(media_type, str) or not isinstance(encoded_data, str):
+            continue
+
+        processed_media_type, processed_data = process_image_bytes(
+            base64.b64decode(encoded_data),
+            media_type,
+            max_dimension=CLAUDE_MANY_IMAGE_MAX_DIMENSION,
+        )
+        source["media_type"] = processed_media_type
+        source["data"] = processed_data
+
+    return True
+
+
 def _convert_openai_messages_to_claude(
     messages: List[ChatCompletionMessageParam],
 ) -> tuple[str, List[Dict[str, Any]]]:
@@ -71,6 +145,18 @@ def _convert_openai_messages_to_claude(
 
     system_prompt = cast(str, cloned_messages[0].get("content"))
     claude_messages = [dict(message) for message in cloned_messages[1:]]
+    image_count = sum(
+        1
+        for message in claude_messages
+        if isinstance(message.get("content"), list)
+        for content in cast(List[Dict[str, Any]], message["content"])
+        if content.get("type") == "image_url"
+    )
+    max_dimension = (
+        CLAUDE_MANY_IMAGE_MAX_DIMENSION
+        if image_count > CLAUDE_MANY_IMAGE_THRESHOLD
+        else None
+    )
 
     for message in claude_messages:
         if not isinstance(message["content"], list):
@@ -82,7 +168,13 @@ def _convert_openai_messages_to_claude(
 
             content["type"] = "image"
             image_data_url = cast(str, content["image_url"]["url"])
-            media_type, base64_data = process_image(image_data_url)
+            if max_dimension is None:
+                media_type, base64_data = process_image(image_data_url)
+            else:
+                media_type, base64_data = process_image(
+                    image_data_url,
+                    max_dimension=max_dimension,
+                )
             del content["image_url"]
             content["source"] = {
                 "type": "base64",
@@ -233,11 +325,13 @@ class AnthropicProviderSession(ProviderSession):
         model: Llm,
         prompt_messages: List[ChatCompletionMessageParam],
         tools: List[Dict[str, Any]],
+        recorder: Optional[AgentRunRecorder] = None,
     ):
         self._client = client
         self._model = model
         self._tools = tools
         self._total_usage = TokenUsage()
+        self._recorder = recorder
         self._prompt_report_logger = PromptReportLogger(
             provider="anthropic",
             model=model,
@@ -246,8 +340,22 @@ class AnthropicProviderSession(ProviderSession):
         system_prompt, claude_messages = _convert_openai_messages_to_claude(prompt_messages)
         self._system_prompt = system_prompt
         self._messages = claude_messages
+        self._many_image_limit_active = (
+            len(_anthropic_image_blocks(self._messages))
+            > CLAUDE_MANY_IMAGE_THRESHOLD
+        )
+
+    def _ensure_many_image_dimension_limit(self) -> None:
+        if self._many_image_limit_active:
+            return
+        self._many_image_limit_active = _enforce_many_image_dimension_limit(
+            self._messages
+        )
 
     async def stream_turn(self, on_event: EventSink) -> ProviderTurn:
+        # Tool screenshots accumulate across turns. Re-check before every API
+        # call so crossing 20 images cannot leave earlier images above 2000 px.
+        self._ensure_many_image_dimension_limit()
         stream_kwargs: Dict[str, Any] = {
             "model": _get_anthropic_api_model_name(self._model),
             "max_tokens": 50000,
@@ -273,6 +381,10 @@ class AnthropicProviderSession(ProviderSession):
             stream_kwargs["temperature"] = 0.0
 
         self._prompt_report_logger.record_request(stream_kwargs)
+        if self._recorder is not None:
+            self._recorder.record_llm_request(
+                "anthropic", _get_anthropic_api_model_name(self._model), stream_kwargs
+            )
 
         state = AnthropicParseState()
         async with self._client.messages.stream(**stream_kwargs) as stream:
@@ -285,14 +397,23 @@ class AnthropicProviderSession(ProviderSession):
         self._total_usage.accumulate(turn_usage)
 
         tool_calls = _extract_tool_calls(final_message)
+        if self._recorder is not None:
+            self._recorder.record_llm_response(
+                state.assistant_text, tool_calls, turn_usage
+            )
         return ProviderTurn(
             assistant_text=state.assistant_text,
             tool_calls=tool_calls,
             assistant_turn=final_message,
         )
 
-    @staticmethod
-    def _image_block(part: Any) -> Dict[str, Any] | None:
+    def total_cost_usd(self) -> Optional[float]:
+        pricing = MODEL_PRICING.get(_get_anthropic_api_model_name(self._model))
+        if pricing is None:
+            return None
+        return self._total_usage.cost(pricing)
+
+    def _image_block(self, part: Any) -> Dict[str, Any] | None:
         """A public URL goes as a url source; local bytes go as base64."""
         if part.image_url:
             return {
@@ -300,7 +421,17 @@ class AnthropicProviderSession(ProviderSession):
                 "source": {"type": "url", "url": part.image_url},
             }
         if part.data is not None:
-            media_type, base64_data = process_image_bytes(part.data, part.mime_type)
+            if self._many_image_limit_active:
+                media_type, base64_data = process_image_bytes(
+                    part.data,
+                    part.mime_type,
+                    max_dimension=CLAUDE_MANY_IMAGE_MAX_DIMENSION,
+                )
+            else:
+                media_type, base64_data = process_image_bytes(
+                    part.data,
+                    part.mime_type,
+                )
             return {
                 "type": "image",
                 "source": {
@@ -360,6 +491,7 @@ class AnthropicProviderSession(ProviderSession):
             )
 
         self._messages.append({"role": "user", "content": tool_result_blocks})
+        self._ensure_many_image_dimension_limit()
 
     def get_total_usage(self) -> TokenUsage:
         usage = self._total_usage

@@ -7,6 +7,7 @@ import {
   VariantStatus,
 } from "../components/commits/types";
 import { PromptAsset } from "../types";
+import { useAppStore } from "./app-store";
 
 // Store for project-specific state
 interface ProjectStore {
@@ -97,7 +98,7 @@ interface ProjectStore {
   resetExecutionConsoles: () => void;
 }
 
-export const useProjectStore = create<ProjectStore>((set) => ({
+export const useProjectStore = create<ProjectStore>((set, get) => ({
   // Inputs and their setters
   inputMode: "image",
   setInputMode: (mode) => set({ inputMode: mode }),
@@ -487,7 +488,15 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       };
     }),
 
-  setHead: (hash: CommitHash) => set({ head: hash }),
+  setHead: (hash: CommitHash) => {
+    // A target is a live element from the current preview document. It cannot
+    // safely carry across versions, so every real version change exits select
+    // mode before swapping the project head. All navigation entry points use
+    // setHead (Previous/Next, Versions, and Back to latest).
+    if (get().head === hash) return;
+    useAppStore.getState().disableInSelectAndEditMode();
+    set({ head: hash });
+  },
   resetHead: () => set({ head: null }),
 
   executionConsoles: {},

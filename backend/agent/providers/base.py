@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal, Optional, Protocol
 
-from agent.providers.token_usage import TokenUsage
+from costs.token_usage import TokenUsage
 from agent.tools import ToolCall, ToolExecutionResult
 
 
@@ -53,6 +53,10 @@ class ProviderSession(Protocol):
         ...
 
     def get_total_cost_usd(self) -> float:
+        ...
+
+    def total_cost_usd(self) -> Optional[float]:
+        """USD spent so far this session; None when the model is unpriced."""
         ...
 
     async def close(self) -> None:

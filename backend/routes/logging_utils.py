@@ -4,7 +4,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from typing import Any, List, cast
 import json
 
-from agent.providers.token_usage import TokenUsage
+from costs.token_usage import TokenUsage
 from config import BACKEND_SAAS_API_SECRET, BACKEND_SAAS_URL, IS_PROD
 from custom_types import InputMode
 from llm import Llm

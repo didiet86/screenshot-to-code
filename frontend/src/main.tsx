@@ -9,6 +9,9 @@ import BestOfNEvalsPage from "./components/evals/BestOfNEvalsPage.tsx";
 import AllEvalsPage from "./components/evals/AllEvalsPage.tsx";
 import OpenAIInputComparePage from "./components/evals/OpenAIInputComparePage.tsx";
 import PromptReportsPage from "./components/evals/PromptReportsPage.tsx";
+import AgentRunsPage from "./components/evals/AgentRunsPage.tsx";
+import EvalSessionsPage from "./components/evals/EvalSessionsPage.tsx";
+import EvalComparePage from "./components/evals/EvalComparePage.tsx";
 
 import AppContainer from "./components/hosted/AppContainer.tsx";
 import {
@@ -71,6 +74,9 @@ root.render(
                 path="/evals/prompt-reports"
                 element={<PromptReportsPage />}
               />
+              <Route path="/evals/agent-runs" element={<AgentRunsPage />} />
+              <Route path="/evals/sessions" element={<EvalSessionsPage />} />
+              <Route path="/evals/compare" element={<EvalComparePage />} />
             </>
           )}
 

@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, cast
 
@@ -12,7 +13,7 @@ from agent.providers.base import (
     ProviderSession,
     StreamEvent,
 )
-from agent.providers.token_usage import TokenUsage
+from costs.token_usage import TokenUsage
 from agent.providers.factory import create_provider_session
 from agent.state import AgentFileState, seed_file_state_from_messages
 from agent.tools import (
@@ -22,6 +23,34 @@ from agent.tools import (
     summarize_text,
     summarize_tool_input,
 )
+from config import GENERATION_MAX_COST_USD
+from fs_logging.agent_runs import AgentRunRecorder
+
+
+class EmptyOutputError(Exception):
+    """Raised when a run finishes without producing any HTML.
+
+    Some models (observed: gemini-3.6-flash) occasionally run asset tools
+    and then stop without calling create_file. Treating that as success
+    poisons evals: the run looks green, diff mode skips it forever, and
+    the output file is empty. Raising makes it a normal, retryable failure.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Generation finished without producing any output.")
+
+
+class BudgetExceededError(Exception):
+    """Raised when a single generation exceeds the spend ceiling.
+
+    The message is shown verbatim to end users (variantError), so it must
+    not contain cost figures; the exact spend is in the run record.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Generation stopped: this variant exceeded its resource limit."
+        )
 
 
 class AgentEngine:
@@ -45,9 +74,11 @@ class AgentEngine:
         asset_base_url: str = "",
         initial_file_state: Optional[Dict[str, str]] = None,
         option_codes: Optional[List[str]] = None,
+        recorder: Optional[AgentRunRecorder] = None,
     ):
         self.send_message = send_message
         self.variant_index = variant_index
+        self.recorder = recorder
         self.openai_api_key = openai_api_key
         self.openai_base_url = openai_base_url
         self.anthropic_api_key = anthropic_api_key
@@ -148,6 +179,8 @@ class AgentEngine:
 
         await self._send("setCode", content)
         self._mark_preview_length(tool_event_id, total_len)
+        if self.recorder is not None:
+            self.recorder.record_set_code(total_len, "stream_preview")
 
     async def _handle_streamed_tool_delta(
         self,
@@ -198,7 +231,7 @@ class AgentEngine:
             self._mark_preview_length(tool_event_id, len(content))
 
     async def _run_with_session(self, session: ProviderSession) -> str:
-        max_steps = 20
+        max_steps = 30
 
         for _ in range(max_steps):
             assistant_event_id = self._next_event_id("assistant")
@@ -207,6 +240,15 @@ class AgentEngine:
             streamed_lengths: Dict[str, int] = {}
 
             async def on_event(event: StreamEvent) -> None:
+                if self.recorder is not None:
+                    if event.type == "assistant_delta":
+                        stream_event_id = assistant_event_id
+                    elif event.type == "thinking_delta":
+                        stream_event_id = thinking_event_id
+                    else:
+                        stream_event_id = event.tool_call_id
+                    self.recorder.record_stream_event(event, stream_event_id)
+
                 if event.type == "assistant_delta":
                     if event.text:
                         await self._send(
@@ -237,6 +279,17 @@ class AgentEngine:
             if not turn.tool_calls:
                 return await self._finalize_response(turn.assistant_text)
 
+            # Abort only when the run would otherwise continue: a run that
+            # just produced its final answer is already paid for. Unpriced
+            # models return None and are not bounded.
+            spent = session.total_cost_usd()
+            if spent is not None and spent > GENERATION_MAX_COST_USD:
+                print(
+                    f"[BUDGET] Aborting variant {self.variant_index}: "
+                    f"${spent:.2f} > ${GENERATION_MAX_COST_USD:.2f}"
+                )
+                raise BudgetExceededError()
+
             executed_tool_calls: List[ExecutedToolCall] = []
             for tool_call in turn.tool_calls:
                 tool_event_id = tool_call.id or self._next_event_id("tool")
@@ -255,9 +308,21 @@ class AgentEngine:
                     if content:
                         await self._stream_code_preview(tool_event_id, content)
 
+                # Timing starts here, after the cosmetic preview stream, so
+                # tool durations measure execution only.
+                if self.recorder is not None:
+                    self.recorder.record_tool_start(tool_event_id, tool_call)
                 tool_result = await self.tool_runtime.execute(tool_call)
+                if self.recorder is not None:
+                    self.recorder.record_tool_end(
+                        tool_event_id, tool_call, tool_result
+                    )
                 if tool_result.updated_content:
                     await self._send("setCode", tool_result.updated_content)
+                    if self.recorder is not None:
+                        self.recorder.record_set_code(
+                            len(tool_result.updated_content), "tool_result"
+                        )
 
                 await self._send(
                     "toolResult",
@@ -283,6 +348,9 @@ class AgentEngine:
         self.tool_runtime.input_images = self._extract_input_images(prompt_messages)
         seed_file_state_from_messages(self.file_state, prompt_messages)
 
+        if self.recorder is not None:
+            self.recorder.record_run_start(model, prompt_messages)
+
         session = create_provider_session(
             model=model,
             prompt_messages=prompt_messages,
@@ -299,10 +367,26 @@ class AgentEngine:
             should_extract_assets=(
                 self.should_extract_assets and bool(self.tool_runtime.input_images)
             ),
+            recorder=self.recorder,
         )
         try:
-            completion = await self._run_with_session(session)
-            return completion, session.get_total_usage(), session.get_total_cost_usd()
+            result = await self._run_with_session(session)
+            if not result:
+                raise EmptyOutputError()
+            if self.recorder is not None:
+                await self.recorder.record_run_end("completed", final_html=result)
+            return result, session.get_total_usage(), session.get_total_cost_usd()
+        # BaseException so cancellation (client disconnect) still finalizes
+        # the run record instead of leaving it stuck at "running".
+        except BaseException as exc:
+            if self.recorder is not None:
+                await self.recorder.record_run_end(
+                    "failed",
+                    error="".join(
+                        traceback.format_exception_only(type(exc), exc)
+                    ).strip(),
+                )
+            raise
         finally:
             await session.close()
 
@@ -314,5 +398,7 @@ class AgentEngine:
         if html:
             self.file_state.content = html
             await self._send("setCode", html)
+            if self.recorder is not None:
+                self.recorder.record_set_code(len(html), "finalize")
 
         return self.file_state.content

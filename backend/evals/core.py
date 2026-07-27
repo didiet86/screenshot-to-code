@@ -1,3 +1,6 @@
+import uuid
+from datetime import datetime
+
 from config import (
     ANTHROPIC_API_KEY,
     GEMINI_API_KEY,
@@ -8,19 +11,23 @@ from config import (
 )
 from llm import Llm, OPENAI_MODELS, ANTHROPIC_MODELS, GEMINI_MODELS
 from agent.runner import Agent
+from fs_logging.agent_runs import AgentRunRecorder
 from prompts.create.image import build_image_prompt_messages
+from prompts.create.text import build_text_prompt_messages
 from prompts.prompt_types import Stack
 from openai.types.chat import ChatCompletionMessageParam
-from typing import Any
+from typing import Any, List
 
 
-async def generate_code_for_image(image_url: str, stack: Stack, model: Llm) -> str:
-    prompt_messages = build_image_prompt_messages(
-        image_data_urls=[image_url],
-        stack=stack,
-        text_prompt="",
-        image_generation_enabled=True,
-    )
+async def _run_eval_agent(
+    prompt_messages: List[ChatCompletionMessageParam],
+    stack: Stack,
+    model: Llm,
+    input_mode: str,
+    eval_set: str | None,
+    eval_session_id: str | None,
+    input_file: str | None,
+) -> str:
     async def send_message(
         _: str,
         __: str | None,
@@ -40,6 +47,19 @@ async def generate_code_for_image(image_url: str, stack: Stack, model: Llm) -> s
 
     print(f"[EVALS] Using agent runner for model: {model.value}")
 
+    recorder = AgentRunRecorder(
+        generation_id=(
+            f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        ),
+        variant_index=0,
+        entry_point="eval",
+        stack=str(stack),
+        input_mode=input_mode,
+        generation_type="create",
+        eval_session=eval_session_id,
+        eval_set=eval_set,
+        input_file=input_file,
+    )
     runner = Agent(
         send_message=send_message,
         variant_index=0,
@@ -54,6 +74,59 @@ async def generate_code_for_image(image_url: str, stack: Stack, model: Llm) -> s
         asset_base_url=LOCAL_ASSET_BASE_URL,
         initial_file_state=None,
         option_codes=None,
+        recorder=recorder,
     )
     completion, _, _ = await runner.run(model, prompt_messages)
     return completion
+
+
+async def generate_code_for_image(
+    image_url: str,
+    stack: Stack,
+    model: Llm,
+    *,
+    eval_set: str | None = None,
+    eval_session_id: str | None = None,
+    input_file: str | None = None,
+) -> str:
+    prompt_messages = build_image_prompt_messages(
+        image_data_urls=[image_url],
+        stack=stack,
+        text_prompt="",
+        image_generation_enabled=True,
+    )
+    return await _run_eval_agent(
+        prompt_messages,
+        stack,
+        model,
+        input_mode="image",
+        eval_set=eval_set,
+        eval_session_id=eval_session_id,
+        input_file=input_file,
+    )
+
+
+async def generate_code_for_text(
+    text_prompt: str,
+    stack: Stack,
+    model: Llm,
+    *,
+    eval_set: str | None = None,
+    eval_session_id: str | None = None,
+    input_file: str | None = None,
+) -> str:
+    """Text-create eval: same prompt construction as the app's text flow."""
+    prompt_messages = build_text_prompt_messages(
+        text_prompt=text_prompt,
+        stack=stack,
+        image_generation_enabled=True,
+    )
+    return await _run_eval_agent(
+        prompt_messages,
+        stack,
+        model,
+        input_mode="text",
+        eval_set=eval_set,
+        eval_session_id=eval_session_id,
+        input_file=input_file,
+    )

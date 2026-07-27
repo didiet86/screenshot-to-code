@@ -5,6 +5,7 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from agent.engine import AgentEngine
 from agent.providers.base import EventSink, ExecutedToolCall, ProviderTurn
+from costs.token_usage import TokenUsage
 from llm import Llm
 
 
@@ -12,8 +13,16 @@ class NoToolProviderSession:
     def __init__(self) -> None:
         self.closed = False
 
+    def get_total_usage(self) -> TokenUsage:
+        return TokenUsage()
+
+    def get_total_cost_usd(self) -> float:
+        return 0.0
+
     async def stream_turn(self, on_event: EventSink) -> ProviderTurn:
-        return ProviderTurn(assistant_text="", tool_calls=[])
+        # Non-empty output so the engine's EmptyOutputError guard stays quiet;
+        # this test only cares about tool-availability wiring.
+        return ProviderTurn(assistant_text="<html>ok</html>", tool_calls=[])
 
     async def append_tool_results(
         self,

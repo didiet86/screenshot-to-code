@@ -1,6 +1,8 @@
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from abc import ABC, abstractmethod
 import traceback
 from nanoid import generate
@@ -73,6 +75,7 @@ from uploaded_assets import (
     infer_local_asset_base_url,
 )
 from agent.runner import Agent
+from fs_logging.agent_runs import AgentRunRecorder
 from routes.model_choice_sets import (
     ALL_KEYS_MODELS_DEFAULT,
     ALL_KEYS_MODELS_TEXT_CREATE,
@@ -714,6 +717,7 @@ class AgenticGenerationStage:
         edit_base_variant_index: int | None,
         edit_base_generation_type: Literal["create", "update", "code_create"] | None,
         should_extract_assets: bool = True,
+        generation_id: str | None = None,
     ):
         self.send_message = send_message
         self.openai_api_key = openai_api_key
@@ -736,6 +740,10 @@ class AgenticGenerationStage:
         self.edit_base_model = edit_base_model
         self.edit_base_variant_index = edit_base_variant_index
         self.edit_base_generation_type = edit_base_generation_type
+        self.generation_id = (
+            generation_id
+            or f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        )
 
     async def process_variants(
         self,
@@ -784,6 +792,14 @@ class AgenticGenerationStage:
                     event_id,
                 )
 
+            recorder = AgentRunRecorder(
+                generation_id=self.generation_id,
+                variant_index=index,
+                entry_point="websocket",
+                stack=self.stack,
+                input_mode=self.input_mode,
+                generation_type=self.generation_type,
+            )
             runner = Agent(
                 send_message=send_runner_message,
                 variant_index=index,
@@ -800,6 +816,7 @@ class AgenticGenerationStage:
                 asset_base_url=self.asset_base_url,
                 initial_file_state=self.file_state,
                 option_codes=self.option_codes,
+                recorder=recorder,
             )
             completion, token_usage, llm_cost_usd = await runner.run(
                 model, prompt_messages

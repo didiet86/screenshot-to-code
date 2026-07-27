@@ -572,8 +572,8 @@ class AgentToolRuntime:
                 },
                 summary={
                     "image": {
-                        "prompt": summarize_text(prompt, 240),
-                        "image_urls": [summarize_text(url, 100) for url in unique_urls],
+                        "prompt": prompt,
+                        "image_urls": unique_urls,
                         "result_url": None,
                         "status": "error",
                     }
@@ -600,8 +600,8 @@ class AgentToolRuntime:
         }
         summary = {
             "image": {
-                "prompt": summarize_text(prompt, 240),
-                "image_urls": [summarize_text(url, 100) for url in unique_urls],
+                "prompt": prompt,
+                "image_urls": unique_urls,
                 "result_url": result_url,
                 "status": "ok",
                 "aspect_ratio": aspect_ratio,

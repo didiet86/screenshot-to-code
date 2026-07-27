@@ -5,7 +5,7 @@ import uuid
 
 import httpx
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 
 from google import genai
 from google.genai import types
@@ -18,9 +18,10 @@ from agent.providers.base import (
     ProviderTurn,
     StreamEvent,
 )
-from agent.providers.pricing import MODEL_PRICING
-from agent.providers.token_usage import TokenUsage
+from costs.pricing import MODEL_PRICING
+from costs.token_usage import TokenUsage
 from agent.tools import CanonicalToolDefinition, ToolCall
+from fs_logging.agent_runs import AgentRunRecorder
 from fs_logging.prompt_reports import PromptReportLogger
 from llm import Llm
 
@@ -54,6 +55,13 @@ def _get_gemini_api_model_name(model: Llm) -> str:
     ]:
         return "gemini-3.5-flash"
     if model in [
+        Llm.GEMINI_3_6_FLASH_HIGH,
+        Llm.GEMINI_3_6_FLASH_MEDIUM,
+        Llm.GEMINI_3_6_FLASH_LOW,
+        Llm.GEMINI_3_6_FLASH_MINIMAL,
+    ]:
+        return "gemini-3.6-flash"
+    if model in [
         Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
         Llm.GEMINI_3_1_PRO_PREVIEW_MEDIUM,
         Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
@@ -67,16 +75,26 @@ def _get_thinking_level_for_model(model: Llm) -> str:
         Llm.GEMINI_3_FLASH_PREVIEW_HIGH,
         Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
         Llm.GEMINI_3_5_FLASH_HIGH,
+        Llm.GEMINI_3_6_FLASH_HIGH,
     ]:
         return "high"
     if model in [
         Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
         Llm.GEMINI_3_5_FLASH_LOW,
+        Llm.GEMINI_3_6_FLASH_LOW,
     ]:
         return "low"
-    if model in [Llm.GEMINI_3_1_PRO_PREVIEW_MEDIUM, Llm.GEMINI_3_5_FLASH_MEDIUM]:
+    if model in [
+        Llm.GEMINI_3_1_PRO_PREVIEW_MEDIUM,
+        Llm.GEMINI_3_5_FLASH_MEDIUM,
+        Llm.GEMINI_3_6_FLASH_MEDIUM,
+    ]:
         return "medium"
-    if model in [Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL, Llm.GEMINI_3_5_FLASH_MINIMAL]:
+    if model in [
+        Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,
+        Llm.GEMINI_3_5_FLASH_MINIMAL,
+        Llm.GEMINI_3_6_FLASH_MINIMAL,
+    ]:
         return "minimal"
     return "high"
 
@@ -281,11 +299,13 @@ class GeminiProviderSession(ProviderSession):
         model: Llm,
         prompt_messages: List[ChatCompletionMessageParam],
         tools: List[types.Tool],
+        recorder: Optional[AgentRunRecorder] = None,
     ):
         self._client = client
         self._model = model
         self._tools = tools
         self._total_usage = TokenUsage()
+        self._recorder = recorder
         self._prompt_report_logger = PromptReportLogger(
             provider="gemini",
             model=model,
@@ -311,13 +331,16 @@ class GeminiProviderSession(ProviderSession):
             tools=self._tools,
         )
 
-        self._prompt_report_logger.record_request(
-            {
-                "model": api_model_name,
-                "contents": self._contents,
-                "config": config,
-            }
-        )
+        request_payload = {
+            "model": api_model_name,
+            "contents": self._contents,
+            "config": config,
+        }
+        self._prompt_report_logger.record_request(request_payload)
+        if self._recorder is not None:
+            self._recorder.record_llm_request(
+                "gemini", api_model_name, request_payload
+            )
 
         stream = await self._client.aio.models.generate_content_stream(
             model=api_model_name,
@@ -337,6 +360,11 @@ class GeminiProviderSession(ProviderSession):
             self._prompt_report_logger.record_usage(turn_usage)
             self._total_usage.accumulate(turn_usage)
 
+        if self._recorder is not None:
+            self._recorder.record_llm_response(
+                state.assistant_text, state.tool_calls, turn_usage
+            )
+
         assistant_turn = (
             types.Content(role=state.model_role, parts=state.model_parts)
             if state.model_parts
@@ -348,6 +376,12 @@ class GeminiProviderSession(ProviderSession):
             tool_calls=state.tool_calls,
             assistant_turn=assistant_turn,
         )
+
+    def total_cost_usd(self) -> Optional[float]:
+        pricing = MODEL_PRICING.get(_get_gemini_api_model_name(self._model))
+        if pricing is None:
+            return None
+        return self._total_usage.cost(pricing)
 
     @staticmethod
     async def _resolve_part_bytes(part: Any) -> tuple[bytes | None, str]:
