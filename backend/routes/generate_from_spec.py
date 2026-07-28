@@ -30,7 +30,9 @@ from pydantic import BaseModel, Field
 
 import config
 from agent.novision_engine import NovisionEngine
+from codegen.build_smoke import run_build_smoke
 from codegen.project_assembler import assemble_project
+from codegen.quality_checks import run_quality_checks
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -204,6 +206,14 @@ async def _run_job(job: _Job) -> None:
         job.progress_pct = 10
         result = await engine.run()
         job.result_files = result.get("files", {})
+
+        # --- Quality gates (spec §7) ---
+        # Run after generation, before marking done. A gate failure does NOT
+        # discard the output — it is recorded in the manifest so the consumer
+        # (the app) can decide whether to accept or fall back to Stage 12.
+        quality_report = run_quality_checks(job.result_files, job.request.spec)
+        smoke_report = run_build_smoke(job.result_files, job.request.framework)
+
         job.result_meta = {
             "framework": job.request.framework,
             "stack": job.request.stack,
@@ -214,7 +224,21 @@ async def _run_job(job: _Job) -> None:
             "malformed_tool_calls": result.get("malformed_tool_calls"),
             "section_count": len(job.request.spec.get("sections", [])),
             "file_count": len(job.result_files),
+            "quality": quality_report.to_dict(),
+            "smoke": smoke_report.to_dict(),
         }
+        if not quality_report.passed:
+            logger.warning(
+                "No-vision job %s failed quality gates: %s",
+                job.job_id,
+                quality_report.violations,
+            )
+        if not smoke_report.passed:
+            logger.warning(
+                "No-vision job %s failed build smoke: %s",
+                job.job_id,
+                smoke_report.error,
+            )
         job.progress_pct = 100
         job.status = "done"
     except Exception as exc:  # noqa: BLE001
