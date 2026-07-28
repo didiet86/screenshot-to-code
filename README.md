@@ -1,4 +1,8 @@
-# screenshot-to-code
+# clone-design (screenshot-to-code fork)
+
+> **Important architectural change (2026)**: The original vision-based path of this service (generating code from screenshots via WebSockets) is **deprecated and scheduled for permanent removal** (see `docs/superpowers/specs/clone-design-no-vision-integration.md`).
+> 
+> This service now acts as a headless, text-only backend component integrated into `app/design`. It accepts a `design_spec.json` payload over HTTP, parses it via a text-based pipeline without any vision models, and outputs a complete multi-file project. **Do not attempt to restore or use the vision-based logic.**
 
 Convert screenshots, mockups, Figma designs, and screen recordings into clean, functional code using AI. The easiest way to try this is using <a href="https://screenshottocode.com/?utm_source=github&utm_medium=readme&utm_campaign=oss_readme&utm_content=top_cta" target="_blank" rel="noopener noreferrer">the official, hosted product at screenshottocode.com →</a>
 

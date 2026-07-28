@@ -19,8 +19,12 @@ from config import (
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     REPLICATE_API_KEY,
+    VISION_ENABLED,
 )
 from custom_types import InputMode
+
+# DEPRECATED: vision path, scheduled for removal (spec §6)
+
 from llm import (
     Llm,
 )
@@ -887,6 +891,12 @@ class PostProcessingMiddleware(Middleware):
 @router.websocket("/generate-code")
 async def stream_code(websocket: WebSocket):
     """Handle WebSocket code generation requests using a pipeline pattern"""
+    if not VISION_ENABLED:
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "value": "Vision code generation is deprecated and disabled (VISION_ENABLED=false). Use /generate-from-spec via app/design."})
+        await websocket.close(1000)
+        return
+
     pipeline = Pipeline()
 
     # Configure the pipeline

@@ -18,9 +18,10 @@ from agent.tools import (
     summarize_text,
     summarize_tool_input,
 )
-from config import GENERATION_MAX_COST_USD
+from config import GENERATION_MAX_COST_USD, VISION_ENABLED
 from fs_logging.agent_runs import AgentRunRecorder
 
+# DEPRECATED: vision path, scheduled for removal (spec §6)
 
 class EmptyOutputError(Exception):
     """Raised when a run finishes without producing any HTML.
@@ -68,6 +69,12 @@ class AgentEngine:
         option_codes: Optional[List[str]] = None,
         recorder: Optional[AgentRunRecorder] = None,
     ):
+        if not VISION_ENABLED:
+            import logging
+            logging.getLogger(__name__).warning(
+                "AgentEngine invoked but VISION_ENABLED is false. This is deprecated (spec §6)."
+            )
+
         self.send_message = send_message
         self.variant_index = variant_index
         self.recorder = recorder

@@ -5,7 +5,9 @@ from preview_screenshot import capture_preview_screenshot
 
 from agent.state import AgentFileState
 from agent.tools.types import ToolExecutionResult, ToolMultimodalPart
+from config import VISION_ENABLED
 
+# DEPRECATED: vision path, scheduled for removal (spec §6)
 
 PREVIEW_VIEWPORTS = ("desktop", "mobile")
 
@@ -22,6 +24,15 @@ async def run_screenshot_preview(
     embeds them in its output, so they are NOT persisted as assets. A data
     URL is inlined into the summary purely so the UI can show the same preview.
     """
+    if not VISION_ENABLED:
+        import logging
+        logging.getLogger(__name__).warning("screenshot_preview invoked but VISION_ENABLED is false.")
+        return ToolExecutionResult(
+            ok=False,
+            result={"error": "Vision tools are deprecated and disabled."},
+            summary={"error": "Vision disabled"}
+        )
+
     if not file_state.content:
         return ToolExecutionResult(
             ok=False,

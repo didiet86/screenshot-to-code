@@ -3,7 +3,15 @@ from typing import Any, Dict
 
 from agent.state import AgentFileState, ensure_str
 from agent.tools.types import ToolCall
-from uploaded_assets.tools import summarize_save_assets_input
+
+# Lazy import: `uploaded_assets` is a vision-path dependency. Importing it at
+# module level would drag it into the no-vision import graph (spec §3.3 rule 1).
+# Only `summarize_tool_input` (for the `save_assets` tool) needs it; `summarize_text`
+# does not. So we defer the import to first use.
+def _summarize_save_assets_input(args: Dict[str, Any]) -> Dict[str, Any]:
+    from uploaded_assets.tools import summarize_save_assets_input
+
+    return summarize_save_assets_input(args)
 
 
 def summarize_text(value: str, limit: int = 240) -> str:
@@ -85,7 +93,7 @@ def summarize_tool_input(tool_call: ToolCall, file_state: AgentFileState) -> Dic
         return {"asset_descriptions": []}
 
     if tool_call.name == "save_assets":
-        return summarize_save_assets_input(args)
+        return _summarize_save_assets_input(args)
 
     if tool_call.name == "retrieve_option":
         return {

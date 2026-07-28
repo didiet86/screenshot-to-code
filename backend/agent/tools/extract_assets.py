@@ -7,7 +7,9 @@ from uploaded_assets.store import persist_data_url_as_asset
 from agent.state import ensure_str
 from agent.tools.summaries import summarize_text
 from agent.tools.types import ToolExecutionResult, ToolMultimodalPart
+from config import VISION_ENABLED
 
+# DEPRECATED: vision path, scheduled for removal (spec §6)
 
 IMAGE_EXTENSION_BY_MIME_TYPE = {
     "image/jpeg": ".jpg",
@@ -48,6 +50,15 @@ async def run_extract_assets(
     asset_base_url: str,
     user_id: Optional[str],
 ) -> ToolExecutionResult:
+    if not VISION_ENABLED:
+        import logging
+        logging.getLogger(__name__).warning("extract_assets invoked but VISION_ENABLED is false.")
+        return ToolExecutionResult(
+            ok=False,
+            result={"error": "Vision tools are deprecated and disabled."},
+            summary={"error": "Vision disabled"}
+        )
+
     if not gemini_api_key:
         return ToolExecutionResult(
             ok=False,

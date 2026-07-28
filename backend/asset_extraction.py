@@ -14,6 +14,7 @@ from google.genai import types
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field, ValidationError
 
+# DEPRECATED: vision path, scheduled for removal (spec §6)
 
 ASSET_EXTRACTION_GEMINI_MODEL = "gemini-3.6-flash"
 MAX_ASSETS_PER_GEMINI_REQUEST = 25
