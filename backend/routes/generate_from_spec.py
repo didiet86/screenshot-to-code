@@ -198,6 +198,7 @@ async def _run_job(job: _Job) -> None:
             model=config.LITELLM_MODEL,  # type: ignore[arg-type]
             base_url=config.LITELLM_BASE_URL,  # type: ignore[arg-type]
             api_key=config.LITELLM_API_KEY,  # type: ignore[arg-type]
+            budget_usd=config.NO_VISION_BUDGET_USD,
             on_event=lambda e: _on_event(job, e),
         )
         job.progress_pct = 10

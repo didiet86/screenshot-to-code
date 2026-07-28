@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 # iteration cap prevents a runaway loop regardless of cost.
 DEFAULT_MAX_ITERATIONS = 40
 
+# Phase-3 mitigation gates (spec §7.6). The no-vision session reports
+# total_cost_usd() as None (pricing is delegated to LiteLLM), so a USD cap
+# can't fire inside the loop. We proxy it with a token ceiling derived from
+# NO_VISION_BUDGET_USD and a rough blended $/M-token rate. This is a backstop,
+# not a precise meter — LiteLLM-side limits remain the authoritative cap.
+_BLENDED_USD_PER_MILLION_TOKENS = 3.0  # conservative blended in+out rate
+
+# Abort if the model emits this many malformed tool calls in a row — a sign
+# it has lost tool-calling coherence and will burn budget without progress.
+_MALFORMED_STREAK_ABORT = 5
+
 
 class NovisionEngine:
     """Runs a single no-vision generation variant."""
@@ -51,6 +62,7 @@ class NovisionEngine:
         base_url: str,
         api_key: str,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        budget_usd: Optional[float] = None,
         on_event: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ):
         self.spec = spec
@@ -64,6 +76,15 @@ class NovisionEngine:
         self.runtime = NovisionToolRuntime(spec=spec)
         self._input_tokens = 0
         self._output_tokens = 0
+        # Phase-3 mitigation: token-based proxy for the USD budget (spec §7.6).
+        # The session can't price itself, so we derive a token ceiling from the
+        # USD budget and a blended rate. None disables the cap.
+        if budget_usd is not None and budget_usd > 0:
+            self._token_budget = int(
+                (budget_usd / _BLENDED_USD_PER_MILLION_TOKENS) * 1_000_000
+            )
+        else:
+            self._token_budget = None
 
     async def run(self) -> Dict[str, Any]:
         """Run the agent loop to completion. Returns a result dict."""
@@ -81,6 +102,7 @@ class NovisionEngine:
         iterations = 0
         tool_call_count = 0
         malformed_tool_calls = 0
+        malformed_streak = 0
 
         try:
             while iterations < self.max_iterations:
@@ -102,6 +124,45 @@ class NovisionEngine:
                     tool_call_count += 1
                     if "INVALID_JSON" in tc.arguments:
                         malformed_tool_calls += 1
+
+                # Phase-3 mitigation: abort on a streak of malformed tool calls.
+                # If the model emits _MALFORMED_STREAK_ABORT bad calls in a row
+                # it has lost tool-calling coherence — continuing burns budget
+                # without progress. We count the trailing streak in this turn.
+                turn_malformed = sum(
+                    1 for tc in turn.tool_calls if "INVALID_JSON" in tc.arguments
+                )
+                if turn_malformed == len(turn.tool_calls) and turn_malformed > 0:
+                    malformed_streak += 1
+                else:
+                    malformed_streak = 0
+                if malformed_streak >= _MALFORMED_STREAK_ABORT:
+                    await self.on_event(
+                        {
+                            "type": "abort",
+                            "reason": "malformed_streak",
+                            "streak": malformed_streak,
+                            "iteration": iterations,
+                        }
+                    )
+                    break
+
+                # Phase-3 mitigation: token-based budget proxy (spec §7.6).
+                # The session can't price itself, so we cap on tokens derived
+                # from NO_VISION_BUDGET_USD. LiteLLM-side limits remain primary.
+                if self._token_budget is not None:
+                    spent = session.total_input_tokens + session.total_output_tokens
+                    if spent > self._token_budget:
+                        await self.on_event(
+                            {
+                                "type": "abort",
+                                "reason": "budget",
+                                "tokens": spent,
+                                "budget": self._token_budget,
+                                "iteration": iterations,
+                            }
+                        )
+                        break
 
                 if not turn.tool_calls:
                     # No tool calls — if there's no text either, the model is
