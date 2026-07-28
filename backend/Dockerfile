@@ -22,3 +22,6 @@ RUN playwright install --with-deps chromium
 
 # Copy the current directory contents into the container at /app
 COPY ./ /app/
+
+EXPOSE 7001
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7001"]
