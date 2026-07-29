@@ -47,7 +47,7 @@ class SmokeResult:
         }
 
 
-def run_build_smoke(
+async def run_build_smoke(
     files: Dict[str, str], framework: str, timeout: int = 180
 ) -> SmokeResult:
     """Run the spec §7.3 build smoke test.
@@ -66,7 +66,7 @@ def run_build_smoke(
     if framework in _BUILD_FRAMEWORKS:
         return _smoke_build_framework(files, framework, timeout)
     elif framework == "html":
-        return _smoke_html(files)
+        return await _smoke_html(files)
     else:
         # Unknown framework — can't smoke-test, treat as skipped (pass).
         return SmokeResult(framework=framework or "unknown", passed=True)
@@ -162,7 +162,7 @@ def _run_subprocess(
 # HTML headless console-error check
 # ---------------------------------------------------------------------------
 
-def _smoke_html(files: Dict[str, str]) -> SmokeResult:
+async def _smoke_html(files: Dict[str, str]) -> SmokeResult:
     """Open the HTML entry in headless Chromium, assert no console errors."""
     import time
 
@@ -197,7 +197,7 @@ def _smoke_html(files: Dict[str, str]) -> SmokeResult:
         t0 = time.monotonic()
 
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.async_api import async_playwright
         except ImportError:
             return SmokeResult(
                 framework="html",
@@ -207,14 +207,14 @@ def _smoke_html(files: Dict[str, str]) -> SmokeResult:
 
         console_errors: List[str] = []
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
-                page = browser.new_page()
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                page = await browser.new_page()
                 page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
                 page.on("pageerror", lambda err: console_errors.append(str(err)))
-                page.goto(f"file://{entry_abs}", wait_until="networkidle", timeout=15000)
-                page.wait_for_timeout(1000)  # let deferred scripts settle
-                browser.close()
+                await page.goto(f"file://{entry_abs}", wait_until="networkidle", timeout=15000)
+                await page.wait_for_timeout(1000)  # let deferred scripts settle
+                await browser.close()
         except Exception as exc:
             return SmokeResult(
                 framework="html",

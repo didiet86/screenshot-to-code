@@ -211,8 +211,8 @@ async def _run_job(job: _Job) -> None:
         # Run after generation, before marking done. A gate failure does NOT
         # discard the output — it is recorded in the manifest so the consumer
         # (the app) can decide whether to accept or fall back to Stage 12.
-        quality_report = run_quality_checks(job.result_files, job.request.spec)
-        smoke_report = run_build_smoke(job.result_files, job.request.framework)
+        quality_report = run_quality_checks(job.result_files, job.request.spec, job.request.framework)
+        smoke_report = await run_build_smoke(job.result_files, job.request.framework)
 
         job.result_meta = {
             "framework": job.request.framework,

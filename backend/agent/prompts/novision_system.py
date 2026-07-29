@@ -61,15 +61,20 @@ from the spec's tokens, sections, and components alone.
 # Output structure
 
 Produce a multi-file project tree. The exact layout depends on the target
-framework, but generally:
+framework — follow the **Framework** section below for the authoritative
+file list. As a general guide:
 
 - A `tailwind.config.js` (or equivalent) whose `theme.extend` is populated from
-  the spec tokens.
-- A tokens CSS file (e.g. `src/styles/tokens.css`) with `:root` custom
-  properties for every color, font, and spacing value.
-- One file per reusable component under `src/components/`.
-- One file per section under `src/sections/` (or `app/` for Next.js).
-- A `package.json` and a short `README.md` describing how to run the project.
+  the spec tokens (Tailwind stacks only).
+- A tokens CSS file (e.g. `src/styles/tokens.css` or `styles/tokens.css`) with
+  `:root` custom properties for every color, font, and spacing value.
+- For **component-based frameworks** (Next.js, Nuxt, Astro): one file per
+  reusable component under `src/components/`, one file per section under
+  `src/sections/` (or `app/` for Next.js).
+- For **static HTML**: ALL markup in a single `index.html` — do NOT create
+  separate files for components or sections. Inline them in DOM order.
+- A `package.json` and a short `README.md` describing how to run the project
+  (framework builds only; static HTML needs neither).
 
 # Stack-specific instructions
 
@@ -100,12 +105,17 @@ _FRAMEWORK_GUIDANCE = {
     "html": """
 # Framework: static HTML
 
-- Emit a static multi-page-capable HTML project. For a single page, use
-  `index.html` as the entry. Link external CSS (`styles/tokens.css`,
-  `styles/main.css`) and JS files rather than inlining everything.
-- Components are plain HTML partials; if you use a build step is out of scope,
-  duplicate shared markup across section files as needed but keep `tokens.css`
-  as the single source of truth for design tokens.
+- Emit a static HTML project with ALL markup in a single `index.html` file.
+  Do NOT create one file per component or section — inline all sections and
+  components directly inside `index.html` in DOM order.
+- Link external CSS (`styles/tokens.css`, `styles/main.css`) and JS
+  (`scripts/main.js`) files rather than inlining styles/scripts.
+- Keep `tokens.css` as the single source of truth for design tokens
+  (`:root` custom properties). Write all other styles in `main.css`.
+- Reusable components (buttons, cards, badges) are CSS class patterns
+  repeated in the HTML — not separate files.
+- The final file tree should be roughly: `index.html`, `styles/tokens.css`,
+  `styles/main.css`, `scripts/main.js`, `README.md`. That's it.
 """,
     "next": """
 # Framework: Next.js

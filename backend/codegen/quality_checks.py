@@ -44,13 +44,15 @@ class QualityReport:
 
 
 def run_quality_checks(
-    files: Dict[str, str], spec: Dict[str, Any]
+    files: Dict[str, str], spec: Dict[str, Any], framework: str = ""
 ) -> QualityReport:
     """Run spec §7.1 + §7.2 gates against assembled output.
 
     Args:
         files: assembled project files (path → content).
         spec: the input design spec (version "1.0").
+        framework: target framework (e.g. "html", "next"). For "html",
+            component file coverage is skipped because components are inlined.
 
     Returns:
         A QualityReport with pass/fail and a list of human-readable violations.
@@ -58,6 +60,7 @@ def run_quality_checks(
     coverage = compute_coverage(files, spec)
     section_pct = float(coverage.get("section_coverage_pct", 0.0))
     token_pct = float(coverage.get("token_usage_pct", 0.0))
+    fw = (framework or "").lower().strip()
 
     violations: List[str] = []
 
@@ -75,19 +78,22 @@ def run_quality_checks(
             + (" …" if len(missing_sections) > 5 else "")
         )
 
-    # --- §7.1: reusable component coverage ---
-    component_details = coverage.get("component_details", [])
-    missing_components = [
-        d.get("name", "?")
-        for d in component_details
-        if not d.get("covered")
-    ]
-    if missing_components:
-        violations.append(
-            f"component_coverage: {len(missing_components)} reusable "
-            f"component(s) missing own file: {', '.join(missing_components[:5])}"
-            + (" …" if len(missing_components) > 5 else "")
-        )
+    # --- §7.1: reusable component coverage (skip for static HTML) ---
+    # In HTML framework, components are inlined as CSS class patterns in
+    # index.html — they don't get separate files, so this check is N/A.
+    if fw != "html":
+        component_details = coverage.get("component_details", [])
+        missing_components = [
+            d.get("name", "?")
+            for d in component_details
+            if not d.get("covered")
+        ]
+        if missing_components:
+            violations.append(
+                f"component_coverage: {len(missing_components)} reusable "
+                f"component(s) missing own file: {', '.join(missing_components[:5])}"
+                + (" …" if len(missing_components) > 5 else "")
+            )
 
     # --- §7.2: token usage ---
     if token_pct < TOKEN_USAGE_FLOOR_PCT:

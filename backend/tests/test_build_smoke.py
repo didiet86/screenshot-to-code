@@ -8,6 +8,7 @@ framework, missing package.json) are exercised directly.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 from typing import Any, List, Tuple
@@ -23,15 +24,15 @@ from codegen.build_smoke import SmokeResult, run_build_smoke
 # Pure-logic branches (no subprocess, no browser)
 # ---------------------------------------------------------------------------
 
-def test_unknown_framework_passes() -> None:
+async def test_unknown_framework_passes() -> None:
     """An unrecognized framework can't be smoke-tested → treated as skipped (pass)."""
-    report = run_build_smoke({"index.html": "<html></html>"}, "vue")
+    report = await run_build_smoke({"index.html": "<html></html>"}, "vue")
     assert report.passed is True
     assert report.framework == "vue"
 
 
-def test_empty_framework_string_passes() -> None:
-    report = run_build_smoke({}, "")
+async def test_empty_framework_string_passes() -> None:
+    report = await run_build_smoke({}, "")
     assert report.passed is True
     assert report.framework == "unknown"
 
@@ -63,53 +64,51 @@ def _fake_subprocess_runner(outcomes: List[Tuple[int, List[str]]]):
     return _fake
 
 
-def test_next_build_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_next_build_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     files = {"package.json": "{}", "src/app/page.tsx": "export default () => null"}
     monkeypatch.setattr(
         build_smoke,
         "_run_subprocess",
         _fake_subprocess_runner([(0, ["install ok"]), (0, ["build ok"])]),
     )
-    report = run_build_smoke(files, "next")
+    report = await run_build_smoke(files, "next")
     assert report.passed is True
     assert report.framework == "next"
     assert report.error is None
 
 
-def test_next_install_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_next_install_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     files = {"package.json": "{}"}
     monkeypatch.setattr(
         build_smoke,
         "_run_subprocess",
         _fake_subprocess_runner([(1, ["npm ERR! ERESOLVE"])]) ,
     )
-    report = run_build_smoke(files, "next")
+    report = await run_build_smoke(files, "next")
     assert report.passed is False
     assert report.error == "npm install failed"
     assert "npm ERR! ERESOLVE" in report.log_tail
 
 
-def test_next_build_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_next_build_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     files = {"package.json": "{}"}
     monkeypatch.setattr(
         build_smoke,
         "_run_subprocess",
         _fake_subprocess_runner([(0, ["install ok"]), (1, ["Type error: X"])]),
     )
-    report = run_build_smoke(files, "next")
+    report = await run_build_smoke(files, "next")
     assert report.passed is False
     assert report.error == "npm run build failed"
     assert "Type error: X" in report.log_tail
 
 
-def test_missing_package_json_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_missing_package_json_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """A framework project with no package.json can't build."""
     # _run_subprocess should never be called.
-    monkeypatch.setattr(
-        build_smoke, "_run_subprocess", lambda *a, **k: pytest.fail("should not build")
-    )
+    monkeypatch.setattr(build_smoke, "_run_subprocess", lambda *a, **k: pytest.fail("should not build"))
     files = {"README.md": "no package.json here"}
-    report = run_build_smoke(files, "astro")
+    report = await run_build_smoke(files, "astro")
     assert report.passed is False
     assert "package.json" in (report.error or "")
 
@@ -136,13 +135,13 @@ def test_subprocess_command_not_found() -> None:
     assert "command not found" in log[-1]
 
 
-def test_build_smoke_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_smoke_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Even an internal crash is caught and returned as a failed result."""
     def _boom(cmd, cwd, timeout):
         raise RuntimeError("internal boom")
     monkeypatch.setattr(build_smoke, "_run_subprocess", _boom)
     files = {"package.json": "{}"}
-    report = run_build_smoke(files, "next")
+    report = await run_build_smoke(files, "next")
     assert report.passed is False
     assert "internal boom" in (report.error or "")
 
@@ -151,41 +150,41 @@ def test_build_smoke_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 # HTML headless console-error check (Playwright mocked)
 # ---------------------------------------------------------------------------
 
-def test_html_no_console_errors_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_html_no_console_errors_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     files = {"index.html": "<html><body>hi</body></html>"}
-    _patch_playwright(monkeypatch, console_errors=[], page_errors=[])
-    report = run_build_smoke(files, "html")
+    _patch_async_playwright(monkeypatch, console_errors=[], page_errors=[])
+    report = await run_build_smoke(files, "html")
     assert report.passed is True
     assert report.framework == "html"
 
 
-def test_html_console_errors_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_html_console_errors_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     files = {"index.html": "<html><body>hi</body></html>"}
-    _patch_playwright(
+    _patch_async_playwright(
         monkeypatch, console_errors=["Uncaught TypeError: X is undefined"], page_errors=[]
     )
-    report = run_build_smoke(files, "html")
+    report = await run_build_smoke(files, "html")
     assert report.passed is False
     assert "console error" in (report.error or "")
     assert "Uncaught TypeError" in " ".join(report.log_tail)
 
 
-def test_html_page_error_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_html_page_error_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     files = {"index.html": "<html><body>hi</body></html>"}
-    _patch_playwright(monkeypatch, console_errors=[], page_errors=["SyntaxError: bad"])
-    report = run_build_smoke(files, "html")
+    _patch_async_playwright(monkeypatch, console_errors=[], page_errors=["SyntaxError: bad"])
+    report = await run_build_smoke(files, "html")
     assert report.passed is False
     assert "SyntaxError: bad" in report.log_tail
 
 
-def test_html_no_entry_file_fails() -> None:
+async def test_html_no_entry_file_fails() -> None:
     files = {"styles.css": "body { color: red; }"}  # no .html at all
-    report = run_build_smoke(files, "html")
+    report = await run_build_smoke(files, "html")
     assert report.passed is False
     assert "no .html entry file" in (report.error or "")
 
 
-def test_html_playwright_import_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_html_playwright_import_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """If Playwright isn't installed, the smoke gate reports a clean failure."""
     files = {"index.html": "<html></html>"}
     import builtins
@@ -198,7 +197,7 @@ def test_html_playwright_import_missing(monkeypatch: pytest.MonkeyPatch) -> None
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _block_playwright)
-    report = run_build_smoke(files, "html")
+    report = await run_build_smoke(files, "html")
     assert report.passed is False
     assert "playwright" in (report.error or "")
 
@@ -207,12 +206,12 @@ def test_html_playwright_import_missing(monkeypatch: pytest.MonkeyPatch) -> None
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _patch_playwright(
+def _patch_async_playwright(
     monkeypatch: pytest.MonkeyPatch,
     console_errors: List[str],
     page_errors: List[str],
 ) -> None:
-    """Inject a fake sync_playwright context manager that captures handlers.
+    """Inject a fake async_playwright context manager that captures handlers.
 
     The real _smoke_html registers console/pageerror handlers and navigates.
     We fake the page object so that registering the handlers stores them, then
@@ -230,14 +229,14 @@ def _patch_playwright(
             elif event == "pageerror":
                 self._pageerror_handler = handler
 
-        def goto(self, *_a, **_kw) -> None:
+        async def goto(self, *_a, **_kw) -> None:
             # Replay the canned errors through the registered handlers.
             for msg in console_errors:
                 self._console_handler(_FakeConsole("error", msg))
             for err in page_errors:
                 self._pageerror_handler(err)
 
-        def wait_for_timeout(self, _ms: int) -> None:
+        async def wait_for_timeout(self, _ms: int) -> None:
             pass
 
     class _FakeConsole:
@@ -246,32 +245,32 @@ def _patch_playwright(
             self.text = text
 
     class _FakeBrowser:
-        def new_page(self) -> _FakePage:
+        async def new_page(self) -> _FakePage:
             return _FakePage()
 
-        def close(self) -> None:
+        async def close(self) -> None:
             pass
 
     class _FakeChromium:
-        def launch(self, **_kw) -> _FakeBrowser:
+        async def launch(self, **_kw) -> _FakeBrowser:
             return _FakeBrowser()
 
     class _FakePlaywright:
         chromium = _FakeChromium()
 
-    class _FakeCtx:
-        def __enter__(self) -> _FakePlaywright:
+    class _FakeAsyncCtx:
+        async def __aenter__(self) -> _FakePlaywright:
             return _FakePlaywright()
 
-        def __exit__(self, *_a) -> None:
+        async def __aexit__(self, *_a) -> None:
             pass
 
-    def _fake_sync_playwright() -> _FakeCtx:
-        return _FakeCtx()
+    def _fake_async_playwright() -> _FakeAsyncCtx:
+        return _FakeAsyncCtx()
 
-    # The module imports sync_playwright lazily inside _smoke_html, so patch
-    # the name as it would be resolved. We patch sys.modules['playwright.sync_api'].
+    # The module imports async_playwright lazily inside _smoke_html, so patch
+    # sys.modules['playwright.async_api'].
     import sys
     fake_mod = MagicMock()
-    fake_mod.sync_playwright = _fake_sync_playwright
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_mod)
+    fake_mod.async_playwright = _fake_async_playwright
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_mod)
