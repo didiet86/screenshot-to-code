@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import zipfile
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # ── Default config files injected as a safety net ──────────────────────────
 # next.config.js with output:'export' is build-critical for static serving.
@@ -31,6 +34,30 @@ _DEFAULT_NEXT_CONFIG = (
     "  images: { unoptimized: true },\n"
     "}\n"
     "module.exports = nextConfig\n"
+)
+
+# ── Default npm packages that the model frequently uses but forgets to add ──
+# Scanned across all .tsx/.ts files and auto-merged into package.json.
+_DEFAULT_DEPENDENCIES: Dict[str, str] = {
+    "lucide-react": "^0.468.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.6.0",
+    "framer-motion": "^11.15.0",
+    "@radix-ui/react-slot": "^1.1.1",
+    "@radix-ui/react-accordion": "^1.2.2",
+    "@radix-ui/react-dialog": "^1.1.4",
+    "@radix-ui/react-dropdown-menu": "^2.1.4",
+    "@radix-ui/react-tabs": "^1.1.2",
+    "next-themes": "^0.4.4",
+    "react-icons": "^5.4.0",
+}
+
+# Import regex to detect npm imports in source files.
+_IMPORT_DEPS_RE = re.compile(
+    r"""from\s+['"](@[a-z][\w/-]+)['"]|import\s+['"](@[a-z][\w/-]+)['"]"""
+    r"""|from\s+['"]([a-z@][\w-]*(?:/[\w-]+)*)['"]""",
+    re.MULTILINE,
 )
 
 
@@ -58,6 +85,19 @@ def assemble_project(
             files = {**files, "next.config.js": _DEFAULT_NEXT_CONFIG}
 
     coverage = compute_coverage(files, spec)
+
+    # ── Safety net: inject missing npm deps that the model imported ──
+    if "package.json" in files:
+        pkg = _safe_parse_json(files["package.json"])
+        if isinstance(pkg, dict):
+            used = _infer_missing_deps(files, _DEFAULT_DEPENDENCIES)
+            existing = set(pkg.get("dependencies", {})) | set(pkg.get("devDependencies", {}))
+            missing = {k: v for k, v in used.items()
+                       if k not in existing and not k.startswith("@types/") and not k.startswith("next/")}
+            if missing:
+                pkg.setdefault("dependencies", {}).update(missing)
+                files["package.json"] = json.dumps(pkg, indent=2)
+                _log("Injected %d missing dep(s): %s", len(missing), list(missing.keys()))
     manifest = build_manifest(
         spec=spec,
         framework=framework,
@@ -249,3 +289,36 @@ def _to_pascal(name: str) -> str:
 
 def _to_kebab(name: str) -> str:
     return re.sub(r"[-_\s]+", "-", name).strip("-").lower()
+
+
+def _safe_parse_json(raw: str) -> Optional[dict]:
+    """Try to parse JSON; return None on failure instead of exploding."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _infer_missing_deps(files: Dict[str, str], known: Dict[str, str]) -> Dict[str, str]:
+    """Scan all .tsx/.ts source files and return deps the model imported.
+
+    Matches import paths against *known* (the default-dep dict) so we
+    don't add random transitive deps — only ones we have a version pin for.
+    """
+    found: Dict[str, str] = {}
+    import_re = re.compile(
+        r"""from\s+['"]([^'"\./][^'"/]+)['"]"""
+        r"""|import\s+['"]([^'"\./][^'"/]+)['"].*from\s+['"]([^'"\./][^'"/]+)['"]"""
+    )
+    for name, content in files.items():
+        if not name.endswith((".tsx", ".ts", ".jsx", ".js")):
+            continue
+        for match in import_re.finditer(content):
+            pkg = match.group(1) or match.group(2) or match.group(3)
+            if not pkg:
+                continue
+            # Take only the top-level scope (e.g. "lucide-react/icons" → "lucide-react")
+            top = pkg.split("/")[0] if pkg.startswith("@") else pkg.split("/")[0]
+            if top in known and top not in found:
+                found[top] = known[top]
+    return found
