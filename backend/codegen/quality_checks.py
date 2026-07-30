@@ -7,6 +7,9 @@ these gates compensate by checking structural completeness against the spec:
                          reusable component has its own file.
   §7.2  Token-usage     — generated CSS/Tailwind references ≥80% of the
                          palette and all font families.
+  §7.3  Import-graph    — every @/ or relative import resolves to a file
+                         that exists in the project (catches missing
+                         components before the build step).
 
 `compute_coverage` in project_assembler.py already calculates the raw
 percentages. This module wraps them with pass/fail thresholds and produces
@@ -16,6 +19,7 @@ act on (flag or regenerate).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -23,6 +27,16 @@ from codegen.project_assembler import compute_coverage
 
 # Spec §7.2 threshold.
 TOKEN_USAGE_FLOOR_PCT = 80.0
+
+# Matches: import X from '@/path' / import X from './path' / import X from '../path'
+_IMPORT_RE = re.compile(
+    r"""(?:import\s+.*?\s+from\s+|import\s+|export\s+.*?\s+from\s+)"""
+    r"""['"]([@./][^'"]+)['"]""",
+    re.MULTILINE,
+)
+
+# npm packages that look like paths but aren't (e.g. "react", "next/image")
+_NPM_PACKAGE_RE = re.compile(r"^[a-z@][a-z0-9-]*/", re.IGNORECASE)
 
 
 @dataclass
@@ -109,9 +123,71 @@ def run_quality_checks(
             f"({missing_count} unreferenced palette/font token(s))"
         )
 
+    # --- §7.3: import graph validation ---
+    # Every @/ or relative import must resolve to a file that exists.
+    # This catches missing components before the build step.
+    if fw not in ("html", ""):
+        import_violations = _check_import_graph(files)
+        violations.extend(import_violations)
+
     return QualityReport(
         passed=len(violations) == 0,
         section_coverage_pct=section_pct,
         token_usage_pct=token_pct,
         violations=violations,
     )
+
+
+def _check_import_graph(files: Dict[str, str]) -> List[str]:
+    """Verify that all @/ and relative imports resolve to actual files.
+
+    Returns a list of violation strings for any broken imports.
+    """
+    # Build a set of all file paths (normalized without leading ./)
+    file_paths = set()
+    for fpath in files:
+        clean = fpath.lstrip("./")
+        file_paths.add(clean)
+        file_paths.add(fpath)
+
+    violations: List[str] = []
+    # Only check JS/TS files
+    code_extensions = (".tsx", ".ts", ".jsx", ".js")
+    for fpath, content in files.items():
+        if not fpath.endswith(code_extensions):
+            continue
+        for match in _IMPORT_RE.finditer(content):
+            ref = match.group(1)
+            # Skip external URLs and protocols
+            if ref.startswith(
+                ("#", "http://", "https://", "data:", "mailto:", "tel:")
+            ):
+                continue
+            # Skip npm packages (e.g. "react", "next/image", "lucide-react")
+            if not ref.startswith(("@/", "./", "/", "../")):
+                continue
+            # Normalize @/ alias to root-relative
+            if ref.startswith("@/"):
+                clean = ref[2:]
+            else:
+                clean = ref.lstrip("./")
+            if not clean:
+                continue
+            # Try exact match and common extensions
+            candidates = [
+                clean,
+                clean + ".tsx",
+                clean + ".ts",
+                clean + ".jsx",
+                clean + ".js",
+                clean + ".css",
+                clean + "/index.tsx",
+                clean + "/index.ts",
+            ]
+            if not any(c in file_paths for c in candidates):
+                violations.append(
+                    f"import_graph: {fpath} imports '{ref}' "
+                    f"but no matching file exists"
+                )
+
+    return violations

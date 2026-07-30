@@ -63,6 +63,10 @@ class JobStatus(BaseModel):
     status: str  # queued | running | done | error
     progress_pct: int
     error: Optional[str] = None
+    # Populated when status == "done"; None otherwise.
+    # Consumers should check quality_passed and smoke_passed before
+    # treating the output as usable.
+    result_meta: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +157,7 @@ async def get_status(
         status=job.status,
         progress_pct=job.progress_pct,
         error=job.error,
+        result_meta=job.result_meta if job.status == "done" else None,
     )
 
 
@@ -226,6 +231,9 @@ async def _run_job(job: _Job) -> None:
             "file_count": len(job.result_files),
             "quality": quality_report.to_dict(),
             "smoke": smoke_report.to_dict(),
+            # Top-level flags for easy consumer checks
+            "quality_passed": quality_report.passed,
+            "smoke_passed": smoke_report.passed,
         }
         if not quality_report.passed:
             logger.warning(

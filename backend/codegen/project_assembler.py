@@ -21,6 +21,18 @@ import re
 import zipfile
 from typing import Any, Dict, List, Optional
 
+# ── Default config files injected as a safety net ──────────────────────────
+# next.config.js with output:'export' is build-critical for static serving.
+# If the LLM forgot to generate it, we inject this default.
+_DEFAULT_NEXT_CONFIG = (
+    "/** @type {import('next').NextConfig} */\n"
+    "const nextConfig = {\n"
+    "  output: 'export',\n"
+    "  images: { unoptimized: true },\n"
+    "}\n"
+    "module.exports = nextConfig\n"
+)
+
 
 def assemble_project(
     files: Dict[str, str],
@@ -33,6 +45,18 @@ def assemble_project(
 
     Returns the raw zip bytes.
     """
+    # ── Safety net: inject critical config files if the agent forgot them ──
+    # We don't rewrite the agent's file tree, but for Next.js projects
+    # next.config.js with output:'export' is build-critical — without it
+    # the build produces SSR output that can't be served as static files.
+    if framework == "next":
+        existing_config = files.get("next.config.js", "")
+        if "next.config.js" not in files:
+            files = {**files, "next.config.js": _DEFAULT_NEXT_CONFIG}
+        elif "output" not in existing_config or "export" not in existing_config:
+            # Config exists but lacks output:'export' — patch it
+            files = {**files, "next.config.js": _DEFAULT_NEXT_CONFIG}
+
     coverage = compute_coverage(files, spec)
     manifest = build_manifest(
         spec=spec,

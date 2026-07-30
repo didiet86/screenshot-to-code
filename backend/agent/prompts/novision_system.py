@@ -115,6 +115,23 @@ CODING RULES:
 - Use aria-* attributes for accessibility; never rely on placeholder text
   as a label.
 - Use React.forwardRef for components that wrap DOM elements.
+
+CONFIGURATION (CRITICAL):
+- You MUST create next.config.js with static export enabled:
+  ```js
+  /** @type {import('next').NextConfig} */
+  const nextConfig = {
+    output: 'export',
+    images: { unoptimized: true },
+  }
+  module.exports = nextConfig
+  ```
+- The output:'export' flag is mandatory — without it the build produces
+  SSR output that cannot be served as static files.
+- images:{unoptimized:true} is required because next/image optimization
+  needs a running server which static export doesn't have.
+- Do NOT set basePath or assetPrefix — the serving infrastructure
+  handles path prefixing at runtime.
 </framework>
 """,
 
