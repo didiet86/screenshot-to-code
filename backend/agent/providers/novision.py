@@ -256,6 +256,15 @@ class NovisionChatSession(ProviderSession):
                 }  # type: ignore[arg-type]
             )
 
+    async def append_user_message(
+        self,
+        content: str,
+    ) -> None:
+        """Append a standalone user message (e.g. a nudge)."""
+        self._messages.append(
+            {"role": "user", "content": content}  # type: ignore[arg-type]
+        )
+
     def total_cost_usd(self) -> Optional[float]:
         """Cost tracking is delegated to LiteLLM (which has the pricing table).
 

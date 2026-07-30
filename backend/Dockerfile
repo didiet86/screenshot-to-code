@@ -5,6 +5,13 @@ ENV POETRY_VERSION 1.8.0
 # Install system dependencies
 RUN pip install "poetry==$POETRY_VERSION"
 
+# Install Node.js (LTS) for build smoke tests (npm install + npm run build).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set work directory
 WORKDIR /app
 

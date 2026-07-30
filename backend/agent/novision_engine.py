@@ -49,6 +49,10 @@ _BLENDED_USD_PER_MILLION_TOKENS = 3.0  # conservative blended in+out rate
 # it has lost tool-calling coherence and will burn budget without progress.
 _MALFORMED_STREAK_ABORT = 5
 
+# How many consecutive turns with no tool calls we tolerate before aborting.
+# The model sometimes "thinks out loud" — a nudge gets it back on track.
+_MAX_IDLE_TURNS = 2
+
 
 class NovisionEngine:
     """Runs a single no-vision generation variant."""
@@ -76,6 +80,9 @@ class NovisionEngine:
         self.runtime = NovisionToolRuntime(spec=spec)
         self._input_tokens = 0
         self._output_tokens = 0
+        # Spec size for coverage guard.
+        self.spec_section_count = len(spec.get("sections", []))
+        self.spec_component_count = len(spec.get("components", []))
         # Phase-3 mitigation: token-based proxy for the USD budget (spec §7.6).
         # The session can't price itself, so we derive a token ceiling from the
         # USD budget and a blended rate. None disables the cap.
@@ -103,6 +110,7 @@ class NovisionEngine:
         tool_call_count = 0
         malformed_tool_calls = 0
         malformed_streak = 0
+        idle_turns = 0
 
         try:
             while iterations < self.max_iterations:
@@ -118,6 +126,22 @@ class NovisionEngine:
                     )
 
                 turn = await session.stream_turn(on_stream_event)  # type: ignore[arg-type]
+
+                # Log what the model did this turn for diagnostics.
+                tool_summary = ", ".join(
+                    f"{tc.name}({tc.arguments[:80]}{'…' if len(tc.arguments) > 80 else ''})"
+                    for tc in turn.tool_calls
+                ) or "(no tool calls)"
+                logger.info(
+                    "Turn %d: %d tool call(s) [%s] | files so far: %d | "
+                    "tokens in=%d out=%d",
+                    iterations,
+                    len(turn.tool_calls),
+                    tool_summary,
+                    len(self.runtime.files),
+                    session.total_input_tokens,
+                    session.total_output_tokens,
+                )
 
                 # Track malformed tool calls (spec §7.6 gate).
                 for tc in turn.tool_calls:
@@ -165,16 +189,75 @@ class NovisionEngine:
                         break
 
                 if not turn.tool_calls:
-                    # No tool calls — if there's no text either, the model is
-                    # done; if it called finish, we stop. Either way, a turn
-                    # with no tool calls ends the loop.
-                    finished = True
-                    break
+                    # Model produced text without a tool call.
+                    idle_turns += 1
+                    if idle_turns >= _MAX_IDLE_TURNS:
+                        logger.warning(
+                            "Turn %d: %d consecutive idle turns — aborting",
+                            iterations, idle_turns,
+                        )
+                        finished = True
+                        break
+                    # Nudge the model to continue generating files.
+                    logger.info(
+                        "Turn %d: no tool calls (idle %d/%d) — nudging",
+                        iterations, idle_turns, _MAX_IDLE_TURNS,
+                    )
+                    await session.append_user_message(
+                        "You haven't generated all required files yet. "
+                        "Continue by calling write_file for the remaining "
+                        "components and pages, then call finish()."
+                    )
+                    continue
+
+                idle_turns = 0  # reset on any tool call
 
                 # Execute each tool call and collect results.
                 executed = []
                 for tc in turn.tool_calls:
                     if tc.name == "finish":
+                        # Coverage guard: reject premature finish when the model
+                        # has barely started generating files.
+                        non_config_files = [
+                            p for p in self.runtime.files
+                            if not p.endswith((".json", ".config.js", ".config.ts"))
+                        ]
+                        expected = max(
+                            self.spec_section_count,
+                            self.spec_component_count,
+                        )
+                        if (
+                            expected > 3
+                            and len(non_config_files) < max(3, expected // 4)
+                            and iterations < self.max_iterations - 2
+                        ):
+                            logger.warning(
+                                "Turn %d: finish() rejected — only %d non-config "
+                                "file(s) for %d sections/%d components",
+                                iterations,
+                                len(non_config_files),
+                                self.spec_section_count,
+                                self.spec_component_count,
+                            )
+                            executed.append(
+                                _make_executed(
+                                    tc,
+                                    ToolExecutionResult(
+                                        ok=False,
+                                        result={"content": (
+                                            f"FINISH REJECTED: You have only generated "
+                                            f"{len(non_config_files)} source file(s) but "
+                                            f"the spec has {self.spec_section_count} sections "
+                                            f"and {self.spec_component_count} components. "
+                                            f"You MUST generate app/page.tsx, all section "
+                                            f"components, and a layout before calling finish(). "
+                                            f"Continue writing files now."
+                                        )},
+                                        summary={"finished": False, "rejected": True},
+                                    ),
+                                )
+                            )
+                            continue
                         finished = True
                         executed.append(
                             _make_executed(
@@ -217,6 +300,7 @@ class NovisionEngine:
             "iterations": iterations,
             "tool_call_count": tool_call_count,
             "malformed_tool_calls": malformed_tool_calls,
+            "idle_turns": idle_turns,
             "input_tokens": self._input_tokens,
             "output_tokens": self._output_tokens,
         }

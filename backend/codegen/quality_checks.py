@@ -33,14 +33,16 @@ logger = logging.getLogger(__name__)
 # Catches both `function Navbar()` and `const Navbar = () =>` / `const Navbar = function()`.
 _COMPONENT_FN_RE = re.compile(
     r"(?:export\s+)?(?:default\s+)?"
-    r"(?:function\s+(Navbar|Header|Footer|Sidebar|SideBar|Layout|Card|Button|Modal|Dialog|"
+    r"(?:"
+    r"function\s+"
+    r"(Navbar|Header|Footer|Sidebar|SideBar|Layout|Card|Button|Modal|Dialog|"
     r"Dropdown|Menu|Tabs|Tab|Accordion|Form|Input|Select|Textarea|Checkbox|Radio|Switch|"
     r"Slider|Progress|Spinner|Loader|Skeleton|Avatar|Badge|Chip|Tag|Tooltip|Popover|"
     r"Drawer|Banner|Alert|Toast|Notification|Timeline|Table|Grid|List|Item|"
     r"Section|Container|Wrapper|Hero|Feature|Pricing|Testimonial|FAQ|Footer|"
     r"Logo|NavLink|NavItem|NavBrand|SocialLink|ThemeToggle|SearchBar|"
     r"[A-Z][a-zA-Z0-9]+)"
-    r")\s*\(|"
+    r"\s*\(|"
     r"(?:const|let|var)\s+"
     r"(Navbar|Header|Footer|Sidebar|SideBar|Layout|Card|Button|Modal|Dialog|"
     r"Dropdown|Menu|Tabs|Tab|Accordion|Form|Input|Select|Textarea|Checkbox|Radio|Switch|"
@@ -49,7 +51,8 @@ _COMPONENT_FN_RE = re.compile(
     r"Section|Container|Wrapper|Hero|Feature|Pricing|Testimonial|FAQ|Footer|"
     r"Logo|NavLink|NavItem|NavBrand|SocialLink|ThemeToggle|SearchBar|"
     r"[A-Z][a-zA-Z0-9]+)"
-    r")\s*[=:]\s*(?:\([^)]*\)\s*=>|function\s*)",
+    r"\s*[=:]\s*(?:\([^)]*\)\s*=>|function\s*)"
+    r")",
     re.MULTILINE,
 )
 
