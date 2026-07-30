@@ -33,6 +33,14 @@ from agent.tools.novision_runtime import NovisionToolRuntime
 from agent.tools.types import ToolExecutionResult
 
 logger = logging.getLogger(__name__)
+# Ensure our log lines reach the console even though uvicorn doesn't
+# configure a root handler for non-uvicorn loggers.
+if not logger.handlers:
+    import sys
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 # Safety caps (spec §4.4). Budget is enforced at the LiteLLM/engine level;
 # iteration cap prevents a runaway loop regardless of cost.
@@ -128,10 +136,13 @@ class NovisionEngine:
                 turn = await session.stream_turn(on_stream_event)  # type: ignore[arg-type]
 
                 # Log what the model did this turn for diagnostics.
-                tool_summary = ", ".join(
-                    f"{tc.name}({tc.arguments[:80]}{'…' if len(tc.arguments) > 80 else ''})"
-                    for tc in turn.tool_calls
-                ) or "(no tool calls)"
+                parts = []
+                for tc in turn.tool_calls:
+                    arg_text = repr(tc.arguments)
+                    if len(arg_text) > 80:
+                        arg_text = arg_text[:80] + "…"
+                    parts.append(f"{tc.name}({arg_text})")
+                tool_summary = ", ".join(parts) if parts else "(no tool calls)"
                 logger.info(
                     "Turn %d: %d tool call(s) [%s] | files so far: %d | "
                     "tokens in=%d out=%d",
