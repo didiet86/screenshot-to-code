@@ -107,6 +107,24 @@ if the spec does not mention it:
 - Performance: no render-blocking patterns; CSS in the right layer;
   JS is deferred or module-scoped.
 </quality-bar>
+
+<efficiency-rules>
+You have a LIMITED budget of turns. To maximise output within budget:
+1. BATCH FILE CREATION: Call create_file for MULTIPLE files in a single
+   turn whenever possible. Aim for 3-5 files per turn after the initial
+   spec reading. Do NOT create one file per turn — that wastes budget.
+2. READ SPEC ONCE: Use read_spec_tokens once at the start to understand
+   the full spec, then start generating immediately. Do NOT re-read
+   sections you've already seen. read_spec_section has a HARD budget of
+   ~2× section_count — once exhausted it ERRORS and you must proceed
+   with what you already read.
+3. PRIORITISE: Generate config files (package.json, next.config.js,
+   tsconfig.json, tailwind.config.ts, postcss.config.js) and globals.css
+   in the FIRST batch, then components in subsequent batches, and
+   app/page.tsx + app/layout.tsx in the final batch.
+4. AVOID CHATTING: Do not produce turns with only text and no tool calls.
+   Every turn should create files or call finish().
+</efficiency-rules>
 """
 
 # ─── Per-framework guidance ────────────────────────────────────────────────

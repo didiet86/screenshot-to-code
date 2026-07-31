@@ -155,13 +155,27 @@ def compute_coverage(files: Dict[str, str], spec: Dict[str, Any]) -> Dict[str, A
     file_paths = set(files.keys())
 
     # --- section coverage ---
-    sections = spec.get("sections", []) or []
+    # Sections may be at top level (spec["sections"]) or nested under
+    # spec["page"]["sections"].  Each section may use "id"/"role" (older
+    # spec format) or "section_type" (newer format).
+    page = spec.get("page", {}) or {}
+    sections = (
+        spec.get("sections", [])
+        or page.get("sections", [])
+        or []
+    )
     section_hits = 0
     section_details: List[Dict[str, Any]] = []
-    for section in sections:
+    for idx, section in enumerate(sections):
         sid = str(section.get("id", ""))
         role = str(section.get("role", ""))
-        # A section is "covered" if any file path or content references its id or role.
+        section_type = str(section.get("section_type", ""))
+        # Use section_type as a fallback identifier when id/role are absent.
+        if not sid and section_type:
+            sid = f"section-{idx}-{section_type}"
+        if not role and section_type:
+            role = section_type
+        # A section is "covered" if any file path or content references its id, role, or type.
         covered = _section_is_covered(sid, role, file_paths, all_content)
         if covered:
             section_hits += 1

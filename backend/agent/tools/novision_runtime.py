@@ -35,6 +35,15 @@ class NovisionToolRuntime:
             for c in spec.get("components", [])
             if c.get("name")
         }
+        # Budget: prevent the model from burning turns reading spec sections
+        # without writing files.  Allow ~2 reads per section plus a one-shot
+        # overhead — enough to understand the spec, too many signals the model
+        # is stalling.  The engine tracks calls and bakes the error into a
+        # user-message that tells the model to start writing.
+        self._read_spec_section_budget = max(
+            3, len(self._sections_by_id) * 2
+        )
+        self._read_spec_section_calls = 0
 
     async def execute(self, tool_call: ToolCall) -> ToolExecutionResult:
         if "INVALID_JSON" in tool_call.arguments:
@@ -224,6 +233,29 @@ class NovisionToolRuntime:
     # ------------------------------------------------------------------
 
     def _read_spec_section(self, args: Dict[str, Any]) -> ToolExecutionResult:
+        # Budget guard: prevent the model wasting turns re-reading sections
+        # instead of writing files.  Once exhausted the tool returns an error;
+        # the model must derive remaining details from what it already read.
+        self._read_spec_section_calls += 1
+        if self._read_spec_section_calls > self._read_spec_section_budget:
+            available = list(self._sections_by_id.keys())
+            return ToolExecutionResult(
+                ok=False,
+                result={
+                    "error": (
+                        f"Read budget exhausted ({self._read_spec_section_budget} calls). "
+                        "You have already read enough of the spec to start writing files. "
+                        "Use create_file now — refer to the section+component data "
+                        "you already received in prior reads."
+                    ),
+                    "available_section_ids": available,
+                    "budget": self._read_spec_section_budget,
+                },
+                summary={
+                    "error": "read_spec_section budget exhausted — write files now",
+                    "budget": self._read_spec_section_budget,
+                },
+            )
         section_id = ensure_str(args.get("section_id"))
         if not section_id:
             return ToolExecutionResult(

@@ -190,11 +190,12 @@ def _check_import_graph(files: Dict[str, str]) -> List[str]:
 
     Returns a list of violation strings for any broken imports.
     """
+    import posixpath
+
     # Build a set of all file paths (normalized without leading ./)
     file_paths = set()
     for fpath in files:
-        clean = fpath.lstrip("./")
-        file_paths.add(clean)
+        file_paths.add(fpath.lstrip("./"))
         file_paths.add(fpath)
 
     violations: List[str] = []
@@ -203,6 +204,8 @@ def _check_import_graph(files: Dict[str, str]) -> List[str]:
     for fpath, content in files.items():
         if not fpath.endswith(code_extensions):
             continue
+        # Directory of the importing file (for resolving relative imports)
+        file_dir = posixpath.dirname(fpath)
         for match in _IMPORT_RE.finditer(content):
             ref = match.group(1)
             # Skip external URLs and protocols
@@ -216,11 +219,19 @@ def _check_import_graph(files: Dict[str, str]) -> List[str]:
             # Normalize @/ alias to root-relative
             if ref.startswith("@/"):
                 clean = ref[2:]
+            elif ref.startswith("/"):
+                clean = ref.lstrip("/")
             else:
-                clean = ref.lstrip("./")
+                # Resolve relative to the importing file's directory
+                # ref is like ./TextBlock or ../utils/helpers
+                resolved = posixpath.normpath(posixpath.join(file_dir, ref))
+                clean = resolved.lstrip("./")
             if not clean:
                 continue
-            # Try exact match and common extensions
+            # Try exact match and common extensions.
+            # Many Next.js projects place source under src/, so @/components/Button
+            # maps to src/components/Button.tsx even though the raw alias is
+            # components/ — try both bare and src/-prefixed candidates.
             candidates = [
                 clean,
                 clean + ".tsx",
@@ -231,6 +242,19 @@ def _check_import_graph(files: Dict[str, str]) -> List[str]:
                 clean + "/index.tsx",
                 clean + "/index.ts",
             ]
+            # Also try with a src/ prefix for @/ aliases (Next.js convention)
+            if ref.startswith("@/"):
+                src_prefixed = "src/" + clean
+                candidates.extend([
+                    src_prefixed,
+                    src_prefixed + ".tsx",
+                    src_prefixed + ".ts",
+                    src_prefixed + ".jsx",
+                    src_prefixed + ".js",
+                    src_prefixed + ".css",
+                    src_prefixed + "/index.tsx",
+                    src_prefixed + "/index.ts",
+                ])
             if not any(c in file_paths for c in candidates):
                 violations.append(
                     f"import_graph: {fpath} imports '{ref}' "
@@ -292,6 +316,9 @@ def _auto_extract_missing_components(
         # Check if this component already has a dedicated file
         existing_file = any(
             k.endswith(f"/{comp_name}.tsx") or k == f"{comp_name}.tsx"
+            or k.endswith(f"/src/{comp_name}.tsx")
+            or f"/{comp_name}/index.tsx" in k
+            or f"/src/{comp_name}/index.tsx" in k
             for k in files
         )
         if existing_file:

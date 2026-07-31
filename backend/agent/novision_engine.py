@@ -239,9 +239,25 @@ class NovisionEngine:
                         )
                         if (
                             expected > 3
-                            and len(non_config_files) < max(3, expected // 4)
+                            and len(non_config_files) < max(5, expected // 3)
                             and iterations < self.max_iterations - 2
                         ):
+                            # Build a list of component names that have no
+                            # matching file yet, so the model knows what to
+                            # create rather than groping blindly.
+                            file_paths = set(non_config_files)
+                            # Simple check: component name appears somewhere
+                            # in a file path (handles src/ prefix, index files).
+                            uncovered = [
+                                cn
+                                for cn in self.runtime._components_by_name
+                                if not any(cn.lower() in k.lower() for k in file_paths)
+                            ]
+                            hint = (
+                                f"Incomplete component list (first 10): {uncovered[:10]}"
+                                if uncovered
+                                else ""
+                            )
                             logger.warning(
                                 "Turn %d: finish() rejected — only %d non-config "
                                 "file(s) for %d sections/%d components",
@@ -262,7 +278,7 @@ class NovisionEngine:
                                             f"and {self.spec_component_count} components. "
                                             f"You MUST generate app/page.tsx, all section "
                                             f"components, and a layout before calling finish(). "
-                                            f"Continue writing files now."
+                                            f"{hint} Continue writing files now."
                                         )},
                                         summary={"finished": False, "rejected": True},
                                     ),

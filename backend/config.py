@@ -57,9 +57,9 @@ VISION_ENABLED = os.environ.get("VISION_ENABLED", "false").strip().lower() in {
 # be re-benchmarked from measured data (spec §4.4 / §7.5) — do not trust
 # unmeasured. The vision path keeps its own GENERATION_MAX_COST_USD above.
 try:
-    NO_VISION_BUDGET_USD = float(os.environ.get("NO_VISION_BUDGET_USD", "1.0"))
+    NO_VISION_BUDGET_USD = float(os.environ.get("NO_VISION_BUDGET_USD", "3.0"))
 except ValueError:
-    NO_VISION_BUDGET_USD = 1.0
+    NO_VISION_BUDGET_USD = 3.0
 
 # Shared-secret for the /generate-from-spec endpoint (spec §9.1).
 CLONE_DESIGN_API_KEY = os.environ.get("CLONE_DESIGN_API_KEY", None)
